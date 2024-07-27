@@ -39,6 +39,8 @@
 
 # IT WORKED! See @ or around line 94 and 104
 # TODO dynamically set the previous refresh rate after the change (fix on|off) rather than the hardcoded 240hz
+## this will extract the currest refreh rates of connected displays, not sure what dictates the order
+## dr --listmonitorsxrandr | grep -C1 " connected " | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*'
 # TODO add in AllowGSYNCCompatible=On for DP-4 and nly set AllowGSYNCCompatible=On for DP-4 if it set to Off
 
 #both_monitors_on='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = On, AllowGSYNCCompatible = On }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On}"'
@@ -53,6 +55,71 @@ monitor_1600p_off='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = Off }"
 monitor_1440p_off='"DP-3: 2560x1440 +0+0 { ForceFullCompositionPipeline = Off }"'
 e_prefix="tearing_fix.sh error:"
 
+declare -A DISPLAYS
+
+# Stores a zero-based multidimensional array (matrix) of connected monitor information
+# Data will be stored as follows:
+#       Each row pertains to a connected monitor
+#       Each column in a row pertains to specific information for that connected monitor
+#               col 0: Display Name
+#               col 1: Display Resolution
+#               col 2: Display Refresh Rate
+#               col 3: Will contain the string 'primary' if the monitor is the primary display, the string will be blank if it is not the primary monitor
+_set_display_data() {
+    local num_rows num_columns=4
+    local raw_data primary_display
+    local display_names=()
+
+    # Get the raw data for all connected displays
+    raw_data="$(xrandr | grep -A 1 --no-group-separator ' connected ')"
+
+    # Get the name of the primary display
+    primary_display="$( echo "$raw_data" | grep " primary " | awk '{print $1;}' )"
+
+    # Store the name of the connected displays in an array
+    local temp
+    while IFS= read -r line; do
+        temp="$(echo "$line" | grep ' connected ' | awk '{ print $1 }')"
+        [[ -n "$temp" ]] && display_names+=("$temp")
+    done <<< "$raw_data"
+
+    # Generate the payload
+    num_rows=${#display_names[@]}
+    for ((i=0;i<num_columns;i++)) do
+        for ((j=0;j<"$num_rows";j++)) do
+            local cache=$RANDOM
+            echo "row ${display_names[$j]}, column $i, data: $cache"
+            if [[ $i -eq 0 ]]; then
+                DISPLAYS[$i,$j]="${display_names[$j]}"
+            else
+                DISPLAYS[$i,$j]=$cache
+            fi   
+        done
+    done    
+
+}
+
+# For debugging the DISPLAYs map, A.K.A the multidimensional array holding our data aka
+# TODO: make rows and columns dynamic
+_dump_DISPLAYS() {
+    local num_rows=2 num_columns=4
+    local f2=" %9s"
+
+    for ((j=0;j<num_rows;j++)) do
+        for ((i=0;i<num_columns;i++)) do
+            printf "$f2" ${DISPLAYS[$i,$j]}
+        done
+       echo
+   done
+
+}
+
+# Temp function to test the DISPLAYS map
+test_init() {
+    [[ ${#DISPLAYS[@]} -eq 0 ]] && _set_display_data
+    if _dump_DISPLAYS; then echo success; fi
+}
+
 _monitor_names() {
     xrandr | grep " connected " | awk '{ print$1 }'
 }
@@ -65,9 +132,44 @@ _is_all_whitespace() {
     return 0
 }
 
+test_multi_array () {
+    declare -A matrix
+    local num_rows=2
+    local num_columns=3
+
+    for ((i=0;i<num_columns;i++)) do
+        for ((j=0;j<num_rows;j++)) do
+            matrix[$i,$j]=$RANDOM
+        done
+    done
+
+
+    local f2=" %9s"
+
+# this works
+    for ((j=0;j<num_rows;j++)) do
+        for ((i=0;i<num_columns;i++)) do
+            printf "$f2" ${matrix[$i,$j]}
+        done
+       echo
+   done
+
+   echo
+   echo "The value of column $(( $1 + 1 )), row $(( $2 + 1)) is: ${matrix[$1,$2]}"
+}
+
+test2() {
+    test_multi_array 0 1
+    echo "element 1 of matrix=${matrix}"
+}
+
 _meets_reqs() {
     if ! which nvidia-settings > /dev/null; then
         echo "${e_prefix} nvidia-settings binary not found"
+        return 1
+    fi
+    if ! which xrandr > /dev/null; then
+        echo "${e_prefix} xrandr binary not found"
         return 1
     fi
 }
