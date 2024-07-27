@@ -30,10 +30,21 @@
 
 #TODO: break these string up into dynamic pieces echoed from functions but for now keep it simple and hardcoded until it works
 #TODO create function to set AllowGSYNCCompatible = On
-both_monitors_on='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = On, AllowGSYNCCompatible = On }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On}"'
+
+# I CANT GET THE COMMANDS RIGHT THE CLOSETS I CAN GET IS TO DYNAMICALLY SWITCH MULTIPLE MONITORS TO USE THE FIX BUT THE PRIMARY LAPTOP MONITOR BUMBPS DOWN TO 60HZ
+# TODO do it in two shots 1st run (which works except the above mentioned problem):
+# nvidia-settings --assign CurrentMetaMode="$(xrandr | sed -nr '/(\S+) connected (primary )?[0-9]+x[0-9]+(\+\S+).*/{ s//\1: nvidia-auto-select \3 { ForceFullCompositionPipeline = On }, /; H }; ${ g; s/\n//g; s/, $//; p }')"
+# THEN swap the refresh rate back to 240
+#xrandr --output DP-4 --mode 2560x1600 --rate 240
+
+#both_monitors_on='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = On, AllowGSYNCCompatible = On }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On}"'
+#both_monitors_on='"DP-3:nvidia-auto-select+2560+160{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}"'
+#both_monitors_on='"DPY-3: @2560x1440 +2560+0 {ViewPortIn=2560x1440, ViewPortOut=2560x1440+0+0, ForceFullCompositionPipeline = On}, DPY-5: 2560x1600_240 @2560x1600 +0+0 {ViewPortIn=2560x1600, ViewPortOut=2560x1600+0+0, ForceFullCompositionPipeline= On, AllowGSYNCCompatible = On}"'
+both_monitors_on='"DP-4: 2560x1600_240 +0+0 {ForceCompositionPipeline=On, ForceFullCompositionPipeline=On}, DP-3: nvidia-auto-select +2560+0 {ForceCompositionPipeline=On, ForceFullCompositionPipeline=On}"'
 monitor_1600p_on='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline= On, AllowGSYNCCompatible = On }"'
 monitor_1440p_on='"DP-3: 2560x1440 +0+0 { ForceFullCompositionPipeline = On}"'
-both_monitors_off='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = Off }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = Off}"'
+#both_monitors_off='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = Off }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = Off}"'
+both_monitors_off='"DPY-3: nvidia-auto-select +2560+0, DPY-5: 2560x1600_240 +0+0 {AllowGSYNCCompatible=On}"'
 monitor_1600p_off='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = Off }"'
 monitor_1440p_off='"DP-3: 2560x1440 +0+0 { ForceFullCompositionPipeline = Off }"'
 e_prefix="tearing_fix.sh error:"
@@ -83,7 +94,7 @@ fix() {
     fi
 
     # Turn off
-    if [[ $1 == 'on' ]]; then
+    if [[ $1 == 'off' ]]; then
         [[ $num_mons -eq 2 ]] && nvidia-settings --assign CurrentMetaMode="${both_monitors_off}" && exit 0
         [[ $mons == 'DP-4' ]] && nvidia-settings --assign CurrentMetaMode="${monitor_1600p_off}" && exit 0
         [[ $mons == 'DP-3' ]] && nvidia-settings --assign CurrentMetaMode="${monitor_1440p_off}" && exit 0
