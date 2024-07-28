@@ -6,13 +6,13 @@
 # at the proper time in order to avoid screen teearing in Desktop applications AND to avoid breaking
 # G-Sync/Adapative sync when Steam games are rnning using gamemoderun. 
 #
-# It is a very annoying Catch-22 bug indeed but this script should be able to address it
-# For now This script will only work for my two screens, I hope to make it fully dynamic in the future
-#
 # We need ForceFullCompositionPipeline = On to avoid screen tearing in Desktop applications
 # We need ForceFullCompositionPipeline = Off when running Steam games with G-Sync/Adaptive Sync
 # otherwise we get 1fps hangups that require opening and closing a TTY just to keep the system
 # from locking up and needing a cold boot
+#
+# It is a very annoying Catch-22 nvidia/linux bug indeed but this script should be able to address it
+# For now This script should work for any number of connected screens
 #
 # We will use the script at startup time when the .desktop files in ~/.config/autostart are executed
 # to set ForceFullCompositionPipeline = On
@@ -22,58 +22,33 @@
 #
 # I have no idea if a steam game crashing will trigger the gamemode end command, it will have to
 # be tested
-#
-# For the sake of simplicity it will be assumed that these two monitors 
-# will always using their native resolution of 1600p and 1440p respectively
-# It will also (for now) be assumed that monitors will not be turned off or 
-# on while games are playing, allthough that should ba able to be handled at a later time
 
-#TODO: break these string up into dynamic pieces echoed from functions but for now keep it simple and hardcoded until it works
-#TODO create function to set AllowGSYNCCompatible = On
 
-# I CANT GET THE COMMANDS RIGHT THE CLOSETS I CAN GET IS TO DYNAMICALLY SWITCH MULTIPLE MONITORS TO USE THE FIX BUT THE PRIMARY LAPTOP MONITOR BUMBPS DOWN TO 60HZ
-# TODO do it in two shots 1st run (which works except the above mentioned problem):
-# nvidia-settings --assign CurrentMetaMode="$(xrandr | sed -nr '/(\S+) connected (primary )?[0-9]+x[0-9]+(\+\S+).*/{ s//\1: nvidia-auto-select \3 { ForceFullCompositionPipeline = On }, /; H }; ${ g; s/\n//g; s/, $//; p }')"
-# THEN swap the refresh rate back to 240
-#xrandr --output DP-4 --mode 2560x1600 --rate 240
+# TODO add in AllowGSYNCCompatible=On for DP-4 (controlled by a an option?) and only set AllowGSYNCCompatible=On for that display if it set to Off or not set
 
-# IT WORKED! See @ or around line 94 and 104
-# TODO dynamically set the previous refresh rate after the change (fix on|off) rather than the hardcoded 240hz
-## this will extract the currest refreh rates of connected displays, not sure what dictates the order
-## xrandr | grep -C1 " connected " | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*'
-# TODO add in AllowGSYNCCompatible=On for DP-4 and nly set AllowGSYNCCompatible=On for DP-4 if it set to Off
-
-#both_monitors_on='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = On, AllowGSYNCCompatible = On }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On}"'
-#both_monitors_on='"DP-3:nvidia-auto-select+2560+160{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}"'
-#both_monitors_on='"DPY-3: @2560x1440 +2560+0 {ViewPortIn=2560x1440, ViewPortOut=2560x1440+0+0, ForceFullCompositionPipeline = On}, DPY-5: 2560x1600_240 @2560x1600 +0+0 {ViewPortIn=2560x1600, ViewPortOut=2560x1600+0+0, ForceFullCompositionPipeline= On, AllowGSYNCCompatible = On}"'
-both_monitors_on='"DP-4: 2560x1600_240 +0+0 {ForceCompositionPipeline=On, ForceFullCompositionPipeline=On}, DP-3: nvidia-auto-select +2560+0 {ForceCompositionPipeline=On, ForceFullCompositionPipeline=On}"'
-monitor_1600p_on='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline= On, AllowGSYNCCompatible = On }"'
-monitor_1440p_on='"DP-3: 2560x1440 +0+0 { ForceFullCompositionPipeline = On}"'
-#both_monitors_off='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = Off }, DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = Off}"'
-both_monitors_off='"DPY-3: nvidia-auto-select +2560+0, DPY-5: 2560x1600_240 +0+0 {AllowGSYNCCompatible=On}"'
-monitor_1600p_off='"DP-4: 2560x1600 +0+0 { ForceFullCompositionPipeline = Off }"'
-monitor_1440p_off='"DP-3: 2560x1440 +0+0 { ForceFullCompositionPipeline = Off }"'
 e_prefix="tearing_fix.sh error:"
 
 declare -A DISPLAYS
 
-# Stores a zero-based multidimensional array (matrix) of connected monitor information
+# SGenerates a zero-based multidimensional array (matrix) of connected monitor information
 # Data will be stored as follows:
 #       Each row pertains to a connected monitor
 #       Each column in a row pertains to specific information for that connected monitor
 #               col 0: Display Name
 #               col 1: Display Resolution
+#               col 2: Display Width
 #               col 2: Display Refresh Rate
-#               col 3: Will contain the string 'primary' if the monitor is the primary display, the string will be blank if it is not the primary monitor
+#               col 3: Will contain the string 'primary' if the monitor is the primary display, the string will be blank if not
 
-_set_display_data() {
-    local num_columns=4 # amount of data points (items) per connected display
-    local num_rows # number of connected displays
+_Set_display_data() {
+    local num_columns=5 # Amount of data points (items) per connected display: name, resolution, width, refresh rate and primary display status, 
+    local num_rows # Number of connected displays
     local raw_data # xrandr output used to generate the data points for all connected displays
     local raw_refresh_rates # xrandr output used to generate the refreh rates per connected display
     local primary_display # Name of the primary display
     local display_names=() # Names of connected displays
     local resolutions=() # Resolutions of connected displays
+    local display_widths=() # Widths of connected displays
     local refresh_rates=() # Refresh rates of connected displays
 
     # round off the decimal values of the refresh rate, hopefully this wont cause a problem
@@ -91,14 +66,17 @@ _set_display_data() {
     done <<< "$raw_refresh_rates"
 
 
-    # Store the name and resolution of each connected displays in its own array
-    local dname dres
+    # Store the display name, resolution and width of each connected display in its own array
+    local dname dres 
     while IFS= read -r line; do
         dname="$(echo "$line" | grep ' connected ' | awk '{ print $1 }')"
         [[ -n "$dname" ]] && display_names+=("$dname")
         #[[ $line =~ ^[0-9]+ ]] && dres="$(echo "$line" | awk '{ print $1 }')"
         dres="$(echo "$line" | awk '{ print $1 }')"
-        [[ $dres != "$dname" ]] && resolutions+=("$dres")
+        if [[ $dres != "$dname" ]]; then 
+            resolutions+=("$dres")
+            display_widths+=("$(echo "$dres" | cut -d 'x' -f 1)")
+        fi
     done <<< "$raw_data"
 
     # Generate the main payload: DISPLAYS
@@ -108,15 +86,16 @@ _set_display_data() {
             # Uncomment below lines to debug assigment of the multidimensional array DISPLAYS
             #local cache=$RANDOM
             #echo "row ${display_names[$j]}, column $i, data: $cache"
-
             # Set each data point in the proper location of the payload
             if [[ $i -eq 0 ]]; then
                 DISPLAYS[$i,$j]="${display_names[$j]}"
             elif [[ $i -eq 1 ]]; then
                 DISPLAYS[$i,$j]="${resolutions[$j]}"
             elif [[ $i -eq 2 ]]; then
-                DISPLAYS[$i,$j]="${refresh_rates[$j]}"
+                DISPLAYS[$i,$j]="${display_widths[$j]}"
             elif [[ $i -eq 3 ]]; then
+                DISPLAYS[$i,$j]="${refresh_rates[$j]}"
+            elif [[ $i -eq 4 ]]; then
                 [[ "${display_names[$j]}" == "$primary_display" ]] && DISPLAYS[$i,$j]="primary" || DISPLAYS[$i,$j]=''
             fi   
         done
@@ -124,38 +103,42 @@ _set_display_data() {
 
 }
 
-# For debugging the DISPLAYs map, A.K.A the multidimensional array holding our data aka
-# TODO: make rows and columns dynamic
-_dump_DISPLAYS() {
-    local num_rows=2 num_columns=4
-    local f2=" %9s"
+# For debugging the DISPLAYs map, A.K.A the 'multidimensional array' holding our data aka DISPLAYS
+_Dump_DISPLAYS() {
+    local columns=()
+    local num_rows
+    local num_columns
+    local linebreak_max
 
+    # Since the length of DISPLAYS is nested it will be num_ros * num_columns long
+    # Divide by 2 to get the number of line breaks to display this as humn readble without extraneous line breaks
+    linebreak_max=$(( ${#DISPLAYS[@]} / 2 )) 
+
+    # The number of rows shold be the number of connected displays
+    for i in "${!DISPLAYS[@]}"; do
+        ((num_rows++))
+        columns+=("$i")
+    done
+
+    local count
+    num_columns=${#columns[@]}
     for ((j=0;j<num_rows;j++)) do
         for ((i=0;i<num_columns;i++)) do
-            printf "$f2" ${DISPLAYS[$i,$j]}
+        count=$((i * j))
+            [[ $count -lt $linebreak_max ]] && echo -n "     ${DISPLAYS[$i,$j]}     "
         done
-       echo
+        # Add linebreaks to increase readability
+        [[ $count -lt $linebreak_max ]] && echo
    done
+   echo
 
 }
 
-# Temp function to test the DISPLAYS map
-# Success, this will be removed soon
-test_init() {
-    [[ ${#DISPLAYS[@]} -eq 0 ]] && _set_display_data
-    if _dump_DISPLAYS; then echo success; fi
-}
-
-_init() {
-    [[ ${#DISPLAYS[@]} -eq 0 ]] && _set_display_data
-    _dump_DISPLAYS
-}
-
-_monitor_names() {
+_Monitor_names() {
     xrandr | grep " connected " | awk '{ print$1 }'
 }
 
-_is_all_whitespace() {
+_All_whitespace() {
     local arg="$1"
     arg=${arg%, }
     arg=${arg#, }
@@ -163,11 +146,12 @@ _is_all_whitespace() {
     return 0
 }
 
-test() {
-    echo "the above is the payload used to derive the proper command for the tearing fix"
+Test() {
+    echo "Test(): Contents of the DISPLAY map is"
+    _Dump_DISPLAYS
  }
 
-_meets_reqs() {
+_Meets_reqs() {
     if ! which nvidia-settings > /dev/null; then
         echo "${e_prefix} nvidia-settings binary not found"
         return 1
@@ -178,15 +162,18 @@ _meets_reqs() {
     fi
 }
 
-fix() {
-    local mons num_mons ec="fix command: "
-    mons="$(_monitor_names)"
+# works but we are refactoring it
+Old_fix() {
+    local mons
+    local num_mons
+    local ec="fix command: "
+    mons="$(_Monitor_names)"
     num_mons="$(echo "$mons" | wc -l)"
 
     # Handle errors
-    if ! _meets_reqs; then exit 1; fi
+    if ! _Meets_reqs; then exit 1; fi
 
-    if _is_all_whitespace "$mons"; then echo "${e_prefix} no monitors found" && exit 1; fi
+    if _All_whitespace "$mons"; then echo "${e_prefix} no monitors found" && exit 1; fi
 
     [[ -z $1 ]] && echo "${e_prefix} ${ec} missing required sub-command. valid sub-commands are <on|off>" && exit 1
 
@@ -214,11 +201,79 @@ fix() {
     fi
 }
 
-# Generate payload: DISPLAYS
-_init
+Fix() {
+    local cmd="Fix"
+
+    if [[ -z $1 ]]; then 
+        echo "${e_prefix} Command: ${cmd} :: requires a sub-command"
+        echo "Valid sub-commands are: <on|off>"
+        exit 1
+    fi
+
+    if [[ $1 != 'on' && $1 != 'off' ]]; then
+        echo "${e_prefix} Command: ${cmd} :: invalid sub-command: ${1}"
+        echo "Valid sub-commands are <on|off>"
+        exit 1
+    fi 
+
+    # Generate CurrentMetaModeString
+    # TODO: make this a function
+    if [[ $1 == 'on' ]]; then
+        # Sample command that works
+        # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
+
+        # Does the order matter? try it
+        # nvidia-settings --assign CurrentMetaMode="DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On},DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On}"
+
+        # I tried it and yay, order does not matter!
+
+        echo
+    fi
+
+    if [[ $1 == 'off' ]]; then
+        #DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=Off},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
+        echo
+    fi
+
+}
+
+# Generates a syntactically correct nvidia CurrentMetaMode value
+# Arguments passed in here should be validate @see function Fix(){...}
+_Generate_CurrentMetaMode() {
+    local e_prefix
+    if [[ -z $1 ]]; then 
+        echo "${e_prefix} ${ec} Internal: Missing required parameter for private function: _Generate_CurrentMetaMode()"
+        echo "Valid sub-commands are: <on|off>"
+        exit 1
+    fi
+
+    case "$1" in
+        'on')
+            echo
+            ;;
+        'off')
+            echo 
+            ;;
+        *)
+            echo
+            ;;
+    esac
+}
+
+_Init() { 
+    [[ ${#DISPLAYS[@]} -eq 0 ]] && _Set_display_data
+}
+
+# Generate payload map: DISPLAYS[][]
+_Init
 
 # Require a command
-[[ $# -eq 0 ]] && echo "${e_prefix} missing required command. valid commands are: fix <on|off>" && exit 1
+if [[ $# -eq 0 ]]; then 
+    echo "${e_prefix} missing required command"
+    echo "valid commands and sub-commands are: Fix <on|off>"
+    exit 1
+fi
 
 # Call functions gracefully
-if declare -f "$1" > /dev/null; then "$@"; else echo "${e_prefix} '$1' is not a valid command" >&2; exit 1; fi
+# Bump the first character of $1 to uppercase to match this scripts function naming convention
+if declare -f "${1^}" > /dev/null; then "$@"; else echo "${e_prefix} '$1' is not a valid command" >&2; exit 1; fi
