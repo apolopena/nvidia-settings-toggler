@@ -23,14 +23,15 @@
 # I have no idea if a steam game crashing will trigger the gamemode end command, it will have to
 # be tested
 
-
 # TODO add in AllowGSYNCCompatible=On for DP-4 (controlled by a an option?) and only set AllowGSYNCCompatible=On for that display if it set to Off or not set
 
+# Globals
+declare -A DISPLAYS
 e_prefix="tearing_fix.sh error:"
 
-declare -A DISPLAYS
 
-# SGenerates a zero-based multidimensional array (matrix) of connected monitor information
+# BIG BUG HERE TO FIX: if a monitor is disabled it will skew all the data because it does not have a refresh rate since there will be no asterisk next to it and that is the hook
+# Generates a zero-based multidimensional array (matrix) of connected monitor information
 # Data will be stored as follows:
 #       Each row pertains to a connected monitor
 #       Each column in a row pertains to specific information for that connected monitor
@@ -39,20 +40,25 @@ declare -A DISPLAYS
 #               col 2: Display Width
 #               col 2: Display Refresh Rate
 #               col 3: Will contain the string 'primary' if the monitor is the primary display, the string will be blank if not
-
 _Set_display_data() {
-    local num_columns=5 # Amount of data points (items) per connected display: name, resolution, width, refresh rate and primary display status, 
+    local num_columns=6 # Amount of data points (items) per connected display: name, resolution, width, refresh rate and primary display status, 
     local num_rows # Number of connected displays
     local raw_data # xrandr output used to generate the data points for all connected displays
     local raw_refresh_rates # xrandr output used to generate the refreh rates per connected display
+
+    # Data points
     local primary_display # Name of the primary display
     local display_names=() # Names of connected displays
     local resolutions=() # Resolutions of connected displays
     local display_widths=() # Widths of connected displays
     local refresh_rates=() # Refresh rates of connected displays
+    local display_states=() # Enabled or Disabled state of connected displays
 
+
+    # BUG HERE data is skewed wehn a monitor is connected but disabled because refresh rate is not parsed in that case because there is no asterisk for the hook
     # round off the decimal values of the refresh rate, hopefully this wont cause a problem
-    raw_refresh_rates="$(xrandr | grep -C1 " connected " | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1)"
+    #raw_refresh_rates="$(xrandr | grep -C1 " connected " | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1)"
+    #echo "$raw_refresh_rates"
 
     # Get the raw data for all connected displays
     raw_data="$(xrandr | grep -A 1 --no-group-separator ' connected ')"
@@ -60,26 +66,33 @@ _Set_display_data() {
     # Get the name of the primary display
     primary_display="$( echo "$raw_data" | grep " primary " | awk '{print $1;}' )"
 
-    # Store the refresh rates of connected monitors in an array
+    # Store the display name, resolution, width, enabled/disabled status of each connected display in its own array
+    # Odd (in the code its even) numbered lines will contain the display name, state and width. Even numbered lines will have the rest
+    local res state rate cnt=0
     while IFS= read -r line; do
-        refresh_rates+=("$line")
-    done <<< "$raw_refresh_rates"
+        if [[ $((cnt++ % 2)) -eq 0 ]]; then
+            display_names+=("$(echo "$line" | grep ' connected ' | awk '{ print $1 }')")
+            state="$(echo "$line" | grep -oP "[[:digit:]]+(mm x )[[:digit:]]+(mm)")"
+            if [[ -n $state ]]; then
+                display_states+=("enabled") 
+            else 
+                display_states+=("disabled")
+            fi
+        else
+            res="$(echo "$line" | awk '{ print $1 }')"
+            resolutions+=("$res")
+
+            display_widths+=("$(echo "$res"| cut -d 'x' -f 1)")
 
 
-    # Store the display name, resolution and width of each connected display in its own array
-    local dname dres 
-    while IFS= read -r line; do
-        dname="$(echo "$line" | grep ' connected ' | awk '{ print $1 }')"
-        [[ -n "$dname" ]] && display_names+=("$dname")
-        #[[ $line =~ ^[0-9]+ ]] && dres="$(echo "$line" | awk '{ print $1 }')"
-        dres="$(echo "$line" | awk '{ print $1 }')"
-        if [[ $dres != "$dname" ]]; then 
-            resolutions+=("$dres")
-            display_widths+=("$(echo "$dres" | cut -d 'x' -f 1)")
+            #rate="$(echo "$line" | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1))"
+            rate="$(echo "$line" | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1)"
+            [[ -z $rate ]] && rate="N/A (display disabled)"
+            refresh_rates+=("$rate")
         fi
     done <<< "$raw_data"
 
-    # Generate the main payload: DISPLAYS
+    # Assign values to the DISPLAY map
     num_rows=${#display_names[@]}
     for ((i=0;i<num_columns;i++)) do
         for ((j=0;j<"$num_rows";j++)) do
@@ -96,6 +109,8 @@ _Set_display_data() {
             elif [[ $i -eq 3 ]]; then
                 DISPLAYS[$i,$j]="${refresh_rates[$j]}"
             elif [[ $i -eq 4 ]]; then
+                DISPLAYS[$i,$j]="${display_states[$j]}"
+            elif [[ $i -eq 5 ]]; then
                 [[ "${display_names[$j]}" == "$primary_display" ]] && DISPLAYS[$i,$j]="primary" || DISPLAYS[$i,$j]=''
             fi   
         done
@@ -201,67 +216,49 @@ Old_fix() {
     fi
 }
 
-Fix() {
-    local cmd="Fix"
+_Valid_OnOff_Subcommand() {
+    local e_prefix
+    e_prefix="$(basename "${BASH_SOURCE[1]}") error: Command: ${FUNCNAME[1]}:"
 
     if [[ -z $1 ]]; then 
-        echo "${e_prefix} Command: ${cmd} :: requires a sub-command"
+        echo "${e_prefix} requires a sub-command"
         echo "Valid sub-commands are: <on|off>"
-        exit 1
+        
+        return 1
     fi
 
     if [[ $1 != 'on' && $1 != 'off' ]]; then
-        echo "${e_prefix} Command: ${cmd} :: invalid sub-command: ${1}"
+        echo "${e_prefix} invalid sub-command: ${1}"
         echo "Valid sub-commands are <on|off>"
-        exit 1
+        return 1
     fi 
-
-    # Generate CurrentMetaModeString
-    # TODO: make this a function
-    if [[ $1 == 'on' ]]; then
-        # Sample command that works
-        # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
-
-        # Does the order matter? try it
-        # nvidia-settings --assign CurrentMetaMode="DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On},DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On}"
-
-        # I tried it and yay, order does not matter!
-
-        echo
-    fi
-
-    if [[ $1 == 'off' ]]; then
-        #DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=Off},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
-        echo
-    fi
-
 }
 
 # Generates a syntactically correct nvidia CurrentMetaMode value
 # Arguments passed in here should be validate @see function Fix(){...}
 _Generate_CurrentMetaMode() {
-    local e_prefix
-    if [[ -z $1 ]]; then 
-        echo "${e_prefix} ${ec} Internal: Missing required parameter for private function: _Generate_CurrentMetaMode()"
-        echo "Valid sub-commands are: <on|off>"
-        exit 1
-    fi
+    if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
 
-    case "$1" in
-        'on')
-            echo
-            ;;
-        'off')
-            echo 
-            ;;
-        *)
-            echo
-            ;;
-    esac
+
 }
 
 _Init() { 
     [[ ${#DISPLAYS[@]} -eq 0 ]] && _Set_display_data
+}
+
+Fix() {
+    local curent_metamode
+
+    if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
+
+    # TODO: maybe Form the string with the leftmost monitor ffirst, so on and so forth.
+    #       Maybe not though since the logic for that would convolute the code.
+    #       Monitor order doesnt matter for CurrentMetaMode, this would just be for human readability 
+
+    # Example of a successful command
+    # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
+
+
 }
 
 # Generate payload map: DISPLAYS[][]
