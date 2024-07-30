@@ -218,42 +218,48 @@ Old_fix() {
 
 _Valid_OnOff_Subcommand() {
     local e_prefix
-    e_prefix="$(basename "${BASH_SOURCE[1]}") error: Command: ${FUNCNAME[1]}:"
+    e_prefix="$(basename "${BASH_SOURCE[1]}") ERROR: Command: ${FUNCNAME[1]}:"
+    cmds="Valid sub-commands are: <on|off>"
 
-    if [[ -z $1 ]]; then 
-        echo "${e_prefix} requires a sub-command"
-        echo "Valid sub-commands are: <on|off>"
-        
-        return 1
-    fi
+    [[ -z $1 ]] && echo -e "${e_prefix} requires a sub-command\n${cmds}" && return 1
 
-    if [[ $1 != 'on' && $1 != 'off' ]]; then
-        echo "${e_prefix} invalid sub-command: ${1}"
-        echo "Valid sub-commands are <on|off>"
-        return 1
-    fi 
+    case $1 in 
+        on )  return 0 ;;
+        off)  return 0 ;;
+        *  )  echo -e "${e_prefix} invalid sub-command: ${1}\n${cmds}" && return 1     
+    esac
 }
 
-# Generates a syntactically correct nvidia CurrentMetaMode value
-# Arguments passed in here should be validate @see function Fix(){...}
-_Generate_CurrentMetaMode() {
-    if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
+_Valid_Get_Subcommand() {
+    local e_prefix
+    e_prefix="$(basename "${BASH_SOURCE[1]}") ERROR: Command: ${FUNCNAME[1]}:"
+    cmds="Valid sub-commands are: <metamode|primary>"
 
-
+    [[ -z $1 ]] && echo -e "${e_prefix} requires a sub-command\n${cmds}" && return 1
+    
+    case $1 in 
+        metamode )  return 0 ;;
+        primary)  return 0 ;;
+        *  )  echo -e "${e_prefix} invalid sub-command: ${1}\n${cmds}" && return 1     
+    esac
 }
+
 
 _Init() { 
     [[ ${#DISPLAYS[@]} -eq 0 ]] && _Set_display_data
 }
 
-fix() {
+# Generates a syntactically correct nvidia CurrentMetaMode value
+# Arguments passed in here should be validate @see function Fix(){...}
+get() {
     local name=0     # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
     local offset=3   # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
     local nas='nvidia-auto-select'
     local num_rows="$DISPLAY_TOTAL"
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
 
-    if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
+    if ! _Valid_Get_Subcommand "$1"; then exit 1; fi
+    if ! _Valid_OnOff_Subcommand "$2"; then exit 1; fi
 
     # Example of a successful command (payload)
     # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
@@ -274,6 +280,17 @@ fix() {
     echo "CurrentMetaMode=\"${payload}\"" # debug
 }
 
+fix () {
+    local metamode
+    if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
+    metamode=$(get metamode "$1")
+    if echo "$metamode" | grep -q 'ERROR'; then
+        echo "${metamode/ERROR/INTERNAL ERROR}"
+        exit 1
+    fi
+    echo "$metamode"
+}
+
 # Generate payload map: DISPLAYS[][]
 _Init
 
@@ -287,5 +304,3 @@ fi
 # Call functions gracefully
 # Bump the first character of $1 to uppercase to match this scripts function naming convention
 if declare -f "${1}" &> /dev/null; then "$@"; else echo "${e_prefix} '$1' is not a valid command" >&2; exit 1; fi
-
-
