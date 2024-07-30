@@ -27,6 +27,7 @@
 
 # Globals
 declare -A DISPLAYS
+DISPLAY_TOTAL=
 e_prefix="tearing_fix.sh error:"
 
 
@@ -41,79 +42,85 @@ e_prefix="tearing_fix.sh error:"
 #               col 2: Display Refresh Rate
 #               col 3: Will contain the string 'primary' if the monitor is the primary display, the string will be blank if not
 _Set_display_data() {
-    local num_columns=6 # Amount of data points (items) per connected display: name, resolution, width, refresh rate and primary display status, 
+    local num_columns=7 # Amount of data points for the DISPLAY map
     local num_rows # Number of connected displays
     local raw_data # xrandr output used to generate the data points for all connected displays
-    local raw_refresh_rates # xrandr output used to generate the refreh rates per connected display
 
-    # Data points
-    local primary_display # Name of the primary display
-    local display_names=() # Names of connected displays
-    local resolutions=() # Resolutions of connected displays
+    # Data points, the number of these must match the value of $num_columns
+    local primary_display   # Name of the primary display
+    local display_names=()  # Names of connected displays
+    local resolutions=()    # Resolutions of connected displays
     local display_widths=() # Widths of connected displays
-    local refresh_rates=() # Refresh rates of connected displays
+    local display_offsets=()        # Diplay offsets show the positioning of a display within the virtual screen space          
+    local refresh_rates=()  # Refresh rates of connected displays
     local display_states=() # Enabled or Disabled state of connected displays
 
-
-    # BUG HERE data is skewed wehn a monitor is connected but disabled because refresh rate is not parsed in that case because there is no asterisk for the hook
-    # round off the decimal values of the refresh rate, hopefully this wont cause a problem
-    #raw_refresh_rates="$(xrandr | grep -C1 " connected " | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1)"
-    #echo "$raw_refresh_rates"
-
-    # Get the raw data for all connected displays
+    # Raw data for all connected displays
     raw_data="$(xrandr | grep -A 1 --no-group-separator ' connected ')"
 
-    # Get the name of the primary display
+    # Total number of connected displays so we can retrieve the data later
+    DISPLAY_TOTAL="$(( $(echo "$raw_data" | wc -l) / 2 ))"
+
+    # Name of the primary display, there will only be one
     primary_display="$( echo "$raw_data" | grep " primary " | awk '{print $1;}' )"
 
-    # Store the display name, resolution, width, enabled/disabled status of each connected display in its own array
-    # Odd (in the code its even) numbered lines will contain the display name, state and width. Even numbered lines will have the rest
-    local res state rate cnt=0
+    # Build the data point arrays that will be used to populate the DISPLAY map
+    # NOTE: Every data point arary MUST contain the same number of elements or the DISPLAY map data will be skewed
+    local resolution state rate cnt=0
     while IFS= read -r line; do
         if [[ $((cnt++ % 2)) -eq 0 ]]; then
+
             display_names+=("$(echo "$line" | grep ' connected ' | awk '{ print $1 }')")
+            display_offsets+=("$(echo "$line" | grep -oP "(\+|-)[[:digit:]]+(\+|-)[[:digit:]]")")
+
             state="$(echo "$line" | grep -oP "[[:digit:]]+(mm x )[[:digit:]]+(mm)")"
             if [[ -n $state ]]; then
                 display_states+=("enabled") 
             else 
                 display_states+=("disabled")
             fi
+
         else
-            res="$(echo "$line" | awk '{ print $1 }')"
-            resolutions+=("$res")
+            resolution="$(echo "$line" | awk '{ print $1 }')"
+            resolutions+=("$resolution")
 
-            display_widths+=("$(echo "$res"| cut -d 'x' -f 1)")
+            display_widths+=("$(echo "$resolution"| cut -d 'x' -f 1)")
 
-
-            #rate="$(echo "$line" | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1))"
             rate="$(echo "$line" | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1)"
-            [[ -z $rate ]] && rate="N/A (display disabled)"
+            [[ -z $rate ]] && rate="N/A"
             refresh_rates+=("$rate")
+
         fi
     done <<< "$raw_data"
 
-    # Assign values to the DISPLAY map
+    # Populate DISPLAY map
     num_rows=${#display_names[@]}
-    for ((i=0;i<num_columns;i++)) do
-        for ((j=0;j<"$num_rows";j++)) do
+    for ((i=0;i<num_rows;i++)) do
+
+        for ((j=0;j<"$num_columns";j++)) do
+
             # Uncomment below lines to debug assigment of the multidimensional array DISPLAYS
             #local cache=$RANDOM
             #echo "row ${display_names[$j]}, column $i, data: $cache"
             # Set each data point in the proper location of the payload
-            if [[ $i -eq 0 ]]; then
-                DISPLAYS[$i,$j]="${display_names[$j]}"
-            elif [[ $i -eq 1 ]]; then
-                DISPLAYS[$i,$j]="${resolutions[$j]}"
-            elif [[ $i -eq 2 ]]; then
-                DISPLAYS[$i,$j]="${display_widths[$j]}"
-            elif [[ $i -eq 3 ]]; then
-                DISPLAYS[$i,$j]="${refresh_rates[$j]}"
-            elif [[ $i -eq 4 ]]; then
-                DISPLAYS[$i,$j]="${display_states[$j]}"
-            elif [[ $i -eq 5 ]]; then
-                [[ "${display_names[$j]}" == "$primary_display" ]] && DISPLAYS[$i,$j]="primary" || DISPLAYS[$i,$j]=''
-            fi   
+            if [[ $j -eq 0 ]]; then
+                DISPLAYS[$i,$j]="${display_names[$i]}"
+            elif [[ $j -eq 1 ]]; then
+                DISPLAYS[$i,$j]="${resolutions[$i]}"
+            elif [[ $j -eq 2 ]]; then
+                DISPLAYS[$i,$j]="${display_widths[$i]}"
+            elif [[ $j -eq 3 ]]; then
+                DISPLAYS[$i,$j]="${display_offsets[$i]}"
+            elif [[ $j -eq 4 ]]; then
+                DISPLAYS[$i,$j]="${refresh_rates[$i]}"
+            elif [[ $j -eq 5 ]]; then
+                DISPLAYS[$i,$j]="${display_states[$i]}"
+            elif [[ $j -eq 6 ]]; then
+                [[ "${display_names[$i]}" == "$primary_display" ]] && DISPLAYS[$i,$j]="primary" || DISPLAYS[$i,$j]='not primary'
+            fi
+
         done
+
     done    
 
 }
@@ -121,32 +128,25 @@ _Set_display_data() {
 # For debugging the DISPLAYs map, A.K.A the 'multidimensional array' holding our data aka DISPLAYS
 _Dump_DISPLAYS() {
     local columns=()
-    local num_rows
-    local num_columns
-    local linebreak_max
-
-    # Since the length of DISPLAYS is nested it will be num_ros * num_columns long
-    # Divide by 2 to get the number of line breaks to display this as humn readble without extraneous line breaks
-    linebreak_max=$(( ${#DISPLAYS[@]} / 2 )) 
-
-    # The number of rows shold be the number of connected displays
-    for i in "${!DISPLAYS[@]}"; do
-        ((num_rows++))
-        columns+=("$i")
-    done
+    local num_rows=$DISPLAY_TOTAL
+    local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
+    local linebreak_max=num_columns
 
     local count
-    num_columns=${#columns[@]}
-    for ((j=0;j<num_rows;j++)) do
-        for ((i=0;i<num_columns;i++)) do
-        count=$((i * j))
-            [[ $count -lt $linebreak_max ]] && echo -n "     ${DISPLAYS[$i,$j]}     "
+    for (( i=0; i < num_rows; i++ )) do
+        for (( j=0; j < num_columns; j++ )) do
+            count=$((i * j))
+            [[ $count -lt $linebreak_max ]] && [[ -n ${DISPLAYS[$i,$j]} ]] && echo -n "     ${DISPLAYS[$i,$j]}     "
         done
         # Add linebreaks to increase readability
         [[ $count -lt $linebreak_max ]] && echo
    done
    echo
 
+}
+
+_Get_2DValueAt() {  
+    echo "${DISPLAYS["$1,$2"]}"
 }
 
 _Monitor_names() {
@@ -246,19 +246,32 @@ _Init() {
     [[ ${#DISPLAYS[@]} -eq 0 ]] && _Set_display_data
 }
 
-Fix() {
-    local curent_metamode
+fix() {
+    local name=0     # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
+    local offset=3   # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
+    local nas='nvidia-auto-select'
+    local num_rows="$DISPLAY_TOTAL"
+    local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
 
     if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
 
-    # TODO: maybe Form the string with the leftmost monitor ffirst, so on and so forth.
-    #       Maybe not though since the logic for that would convolute the code.
-    #       Monitor order doesnt matter for CurrentMetaMode, this would just be for human readability 
-
-    # Example of a successful command
+    # Example of a successful command (payload)
     # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
-
-
+    
+    # Generate the payload (CurrentMetaMode) from the DISPLAYS map
+    local chunk payload cnt=0
+    for ((i=0;i<num_rows;i++)) do
+        chunk="${DISPLAYS["$i,$name"]}:${nas}${DISPLAYS["$i,$offset"]}{ForceFullCompositionPipeline=${1^}}"
+        for ((j=0;j<num_columns;j++)) do
+            # For every row of data (connected display) in the DISPLAYS map...
+            if [[ $((++cnt % num_columns )) -eq 0 ]]; then
+                [[ $cnt -ne "${#DISPLAYS[@]}" ]] && chunk="${chunk},"
+                payload+="${chunk}"
+            fi
+        done
+        
+    done
+    echo "CurrentMetaMode=\"${payload}\"" # debug
 }
 
 # Generate payload map: DISPLAYS[][]
@@ -273,4 +286,6 @@ fi
 
 # Call functions gracefully
 # Bump the first character of $1 to uppercase to match this scripts function naming convention
-if declare -f "${1^}" > /dev/null; then "$@"; else echo "${e_prefix} '$1' is not a valid command" >&2; exit 1; fi
+if declare -f "${1}" &> /dev/null; then "$@"; else echo "${e_prefix} '$1' is not a valid command" >&2; exit 1; fi
+
+
