@@ -127,7 +127,6 @@ _Set_display_data() {
 
 # For debugging the DISPLAYs map, A.K.A the 'multidimensional array' holding our data aka DISPLAYS
 _Dump_DISPLAYS() {
-    local columns=()
     local num_rows=$DISPLAY_TOTAL
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
     local linebreak_max=num_columns
@@ -143,10 +142,6 @@ _Dump_DISPLAYS() {
    done
    echo
 
-}
-
-_Get_2DValueAt() {  
-    echo "${DISPLAYS["$1,$2"]}"
 }
 
 _Monitor_names() {
@@ -174,45 +169,6 @@ _Meets_reqs() {
     if ! which xrandr > /dev/null; then
         echo "${e_prefix} xrandr binary not found"
         return 1
-    fi
-}
-
-# works but we are refactoring it
-Old_fix() {
-    local mons
-    local num_mons
-    local ec="fix command: "
-    mons="$(_Monitor_names)"
-    num_mons="$(echo "$mons" | wc -l)"
-
-    # Handle errors
-    if ! _Meets_reqs; then exit 1; fi
-
-    if _All_whitespace "$mons"; then echo "${e_prefix} no monitors found" && exit 1; fi
-
-    [[ -z $1 ]] && echo "${e_prefix} ${ec} missing required sub-command. valid sub-commands are <on|off>" && exit 1
-
-    if [[ $1 != 'on' && $1 != 'off' ]]; then
-        echo "${e_prefix} ${ec} invalid sub-command: ${1}"
-        echo "valid commands are <on|off>"
-        exit 1
-    fi
-
-    # Turn on 
-    if [[ $1 == 'on' ]]; then
-        #[[ $num_mons -eq 2 ]] && nvidia-settings --assign CurrentMetaMode="${both_monitors_on}" && exit 0
-        [[ $num_mons -eq 2 ]] && nvidia-settings --assign CurrentMetaMode="$(xrandr | sed -nr '/(\S+) connected (primary )?[0-9]+x[0-9]+(\+\S+).*/{ s//\1: nvidia-auto-select \3 { ForceFullCompositionPipeline = On }, /; H }; ${ g; s/\n//g; s/, $//; p }')" \
-        && xrandr --output DP-4 --mode 2560x1600 --rate 240 && exit 0
-        [[ $mons == 'DP-4' ]] && nvidia-settings --assign CurrentMetaMode="${monitor_1600p_on}" && exit 0
-        [[ $mons == 'DP-3' ]] && nvidia-settings --assign CurrentMetaMode="${monitor_1440p_on}" && exit 0
-    fi
-
-    # Turn off
-    if [[ $1 == 'off' ]]; then
-        [[ $num_mons -eq 2 ]] && nvidia-settings --assign CurrentMetaMode="$(xrandr | sed -nr '/(\S+) connected (primary )?[0-9]+x[0-9]+(\+\S+).*/{ s//\1: nvidia-auto-select \3 { ForceFullCompositionPipeline = Off }, /; H }; ${ g; s/\n//g; s/, $//; p }')" \
-        && xrandr --output DP-4 --mode 2560x1600 --rate 240 && exit 0
-        [[ $mons == 'DP-4' ]] && nvidia-settings --assign CurrentMetaMode="${monitor_1600p_off}" && exit 0
-        [[ $mons == 'DP-3' ]] && nvidia-settings --assign CurrentMetaMode="${monitor_1440p_off}" && exit 0
     fi
 }
 
@@ -251,6 +207,7 @@ _Init() {
 
 # Generates a syntactically correct nvidia CurrentMetaMode value
 # Arguments passed in here should be validate @see function Fix(){...}
+# Must be called with two args in the proper order: <metamode|primary> <on|off>
 get() {
     local name=0     # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
     local offset=3   # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
@@ -267,7 +224,7 @@ get() {
     # Generate the payload (CurrentMetaMode) from the DISPLAYS map
     local chunk payload cnt=0
     for ((i=0;i<num_rows;i++)) do
-        chunk="${DISPLAYS["$i,$name"]}:${nas}${DISPLAYS["$i,$offset"]}{ForceFullCompositionPipeline=${1^}}"
+        chunk="${DISPLAYS["$i,$name"]}:${nas}${DISPLAYS["$i,$offset"]}{ForceFullCompositionPipeline=${2^}}"
         for ((j=0;j<num_columns;j++)) do
             # For every row of data (connected display) in the DISPLAYS map...
             if [[ $((++cnt % num_columns )) -eq 0 ]]; then
@@ -277,18 +234,47 @@ get() {
         done
         
     done
-    echo "CurrentMetaMode=\"${payload}\"" # debug
+    echo "${payload}"
 }
 
 fix () {
     local metamode
+
     if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
+
     metamode=$(get metamode "$1")
+
     if echo "$metamode" | grep -q 'ERROR'; then
         echo "${metamode/ERROR/INTERNAL ERROR}"
         exit 1
     fi
-    echo "$metamode"
+
+    # TODO:
+    # We need a fix here for when nvidia-auto-select uses a refresh rate other than what was just used
+    # For example if DP-4 was set to 240hz and the below metamode is used:
+    # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
+    # Then the refresh rate of DP-4 will be changed to 60hz
+    # This is because "nvidia-auto-select" mode is not necessarily the largest possible resolution, 
+    # nor is it necessarily the mode with the highest refresh rate. 
+    # Rather, the "nvidia-auto-select" mode is selected such that it is a reasonable default.
+    # See https://download.nvidia.com/XFree86/Linux-x86_64/169.04/README/chapter-19.html
+
+    # Possible fix could be to track the refresh rates before the change is made,
+    # then compare the new refresh rate with the old ones and if they differ set them back to the old refrest rates
+    # it is possible that the resolution could be chaged, tminings could be different and general crap could ensue
+    # I would like to simply set everything explicitly rather than use nvidia-auto-select
+    # but I could not find a command that works properly. The closest I could find was this:
+    # nvidia-settings --assign CurrentMetaMode="DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On }, DP-4: 2560x1600_240 +0+0 { ForceFullCompositionPipeline = On }"
+    # which sets the resolution ans refresh rates explicitly but notice that DP-3 does not have an explicit refresh rate set
+    # Any attempt to set a refresh rate such as using 2560x1440_164.96 0r 2560x1440_164.96 failed.
+    # I mean nvidia-settings --assign CurrentMetaMode="DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On }, DP-4: 2560x1600_240 +0+0 { ForceFullCompositionPipeline = On }"
+    # works for my displays but it may not work for other people displays, the result though should be simply that the refresh rate is change to something other than what it was
+    # note that setting DP-3 refresh rate to a whole number that is a supported mode such as 120 did work:
+    # DP-3:2560x1440_120+2560+0{ForceFullCompositionPipeline=On},DP-4:2560x1600_240+0+0{ForceFullCompositionPipeline=On}
+    # Hence the issue seems to be realted to setting a refresh rate that is not a whole number, maybe its a 'timings' thing which I dont understand yet
+
+    nvidia-settings --assign CurrentMetaMode="${metamode}"
+    #echo "${metamode}"
 }
 
 # Generate payload map: DISPLAYS[][]
