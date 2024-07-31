@@ -31,8 +31,7 @@ DISPLAY_TOTAL=
 e_prefix="tearing_fix.sh error:"
 
 
-# BIG BUG HERE TO FIX: if a monitor is disabled it will skew all the data because it does not have a refresh rate since there will be no asterisk next to it and that is the hook
-# Generates a zero-based multidimensional array (matrix) of connected monitor information
+# Generates a multidimensional array (matrix) of connected monitor information
 # Data will be stored as follows:
 #       Each row pertains to a connected monitor
 #       Each column in a row pertains to specific information for that connected monitor
@@ -41,6 +40,7 @@ e_prefix="tearing_fix.sh error:"
 #               col 2: Display Width
 #               col 2: Display Refresh Rate
 #               col 3: Will contain the string 'primary' if the monitor is the primary display, the string will be blank if not
+# Note: Do not call this function without ensuring that DISPLAYS is empty
 _Set_display_data() {
     local num_columns=7 # Amount of data points for the DISPLAY map
     local num_rows # Number of connected displays
@@ -57,6 +57,7 @@ _Set_display_data() {
 
     # Raw data for all connected displays
     raw_data="$(xrandr | grep -A 1 --no-group-separator ' connected ')"
+    #echo "raw=$raw_data"
 
     # Total number of connected displays so we can retrieve the data later
     DISPLAY_TOTAL="$(( $(echo "$raw_data" | wc -l) / 2 ))"
@@ -86,8 +87,14 @@ _Set_display_data() {
 
             display_widths+=("$(echo "$resolution"| cut -d 'x' -f 1)")
 
-            rate="$(echo "$line" | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1 | cut -d '.' -f 1)"
-            [[ -z $rate ]] && rate="N/A"
+            rate="$(echo "$line" | awk '{ print$2 }' | cut -d '*' -f 1)"
+
+            if [[ -n "$rate" ]]; then
+                # Strip refresh rates that end with .00 
+                [[ "$(echo "$rate" | cut -d '.' -f 2)" == '00' ]] && rate="$(echo "$rate" | cut -d '.' -f 1)"
+            else
+                rate="N/A"
+            fi
             refresh_rates+=("$rate")
 
         fi
@@ -125,7 +132,7 @@ _Set_display_data() {
 
 }
 
-# For debugging the DISPLAYs map, A.K.A the 'multidimensional array' holding our data aka DISPLAYS
+# Show display data in human readable format, still parseable
 _Dump_DISPLAYS() {
     local num_rows=$DISPLAY_TOTAL
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
@@ -140,8 +147,6 @@ _Dump_DISPLAYS() {
         # Add linebreaks to increase readability
         [[ $count -lt $linebreak_max ]] && echo
    done
-   echo
-
 }
 
 _Monitor_names() {
@@ -201,16 +206,23 @@ _Valid_Get_Subcommand() {
 }
 
 
-_Init() { 
+
+_Initialize() { 
     [[ ${#DISPLAYS[@]} -eq 0 ]] && _Set_display_data
 }
+
+_Reinitialize() {
+    declare -gA DISPLAYS && _Set_display_data
+}
+
 
 # Generates a syntactically correct nvidia CurrentMetaMode value
 # Arguments passed in here should be validate @see function Fix(){...}
 # Must be called with two args in the proper order: <metamode|primary> <on|off>
 get() {
     local name=0     # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
-    local offset=3   # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
+    local offset=3   # Index of the display offset value set in the DISPLAYS map @see _Set_display_data()
+    local resolution=1   # Index of the display offset value set in the DISPLAYS map @see _Set_display_data()
     local nas='nvidia-auto-select'
     local num_rows="$DISPLAY_TOTAL"
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
@@ -224,21 +236,22 @@ get() {
     # Generate the payload (CurrentMetaMode) from the DISPLAYS map
     local chunk payload cnt=0
     for ((i=0;i<num_rows;i++)) do
-        chunk="${DISPLAYS["$i,$name"]}:${nas}${DISPLAYS["$i,$offset"]}{ForceFullCompositionPipeline=${2^}}"
+        chunk="${DISPLAYS["$i,$name"]}:${DISPLAYS["$i,$resolution"]}${DISPLAYS["$i,$offset"]}{ForceFullCompositionPipeline=${2^}}"
         for ((j=0;j<num_columns;j++)) do
-            # For every row of data (connected display) in the DISPLAYS map...
+            # For every row of data
             if [[ $((++cnt % num_columns )) -eq 0 ]]; then
                 [[ $cnt -ne "${#DISPLAYS[@]}" ]] && chunk="${chunk},"
                 payload+="${chunk}"
             fi
         done
-        
     done
     echo "${payload}"
 }
 
 fix () {
-    local metamode
+    declare -A old_rates 
+    declare -A new_rates
+    local metamode name
 
     if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
 
@@ -268,17 +281,52 @@ fix () {
     # which sets the resolution ans refresh rates explicitly but notice that DP-3 does not have an explicit refresh rate set
     # Any attempt to set a refresh rate such as using 2560x1440_164.96 0r 2560x1440_164.96 failed.
     # I mean nvidia-settings --assign CurrentMetaMode="DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On }, DP-4: 2560x1600_240 +0+0 { ForceFullCompositionPipeline = On }"
-    # works for my displays but it may not work for other people displays, the result though should be simply that the refresh rate is change to something other than what it was
+    # works for my displays but it may not work for other people displays, the result though should be simply that the refresh rate is changed to something other than what it was
     # note that setting DP-3 refresh rate to a whole number that is a supported mode such as 120 did work:
     # DP-3:2560x1440_120+2560+0{ForceFullCompositionPipeline=On},DP-4:2560x1600_240+0+0{ForceFullCompositionPipeline=On}
-    # Hence the issue seems to be realted to setting a refresh rate that is not a whole number, maybe its a 'timings' thing which I dont understand yet
+    # adding other modes that were not there by default such as 165hz (for a 166hx monitor) did not work
+    # Hence the issue seems to be related to setting a refresh rate that is not a whole number, maybe its a 'timings' thing which I dont understand yet
+    # it might be the usb-c to dvi cable/adapter I am using for DP-3 that gives it a refresh rate that is not a whole number
+    # I tried adding a new mode for 166hz exactly but got an xrandr Error of failed request:  BadMatch (invalid parameter attributes)
 
-    nvidia-settings --assign CurrentMetaMode="${metamode}"
-    #echo "${metamode}"
+    # I am going to try to store the original refresh rates, issue the command: nvidia-settings --assign CurrentMetaMode="${metamode}"
+    # collect the new refres hrates, compare them and if any new value is different from the old value then change it back to the old value
+
+    # save a map of the current refresh rates as the 'old' ones
+    # Use the display name for that rate as the key
+    while IFS= read -r line; do
+        name="$(echo "$line" | awk '{ print$1 }')"
+        old_rates["$name"]="$(echo "$line" | awk '{ print$5 }')"
+    done <<< "$(_Dump_DISPLAYS)"
+
+    echo "dumping refresh rates before the change"
+    for key in "${!old_rates[@]}"; do
+    echo "Key: $key, Value: ${old_rates[$key]}"
+    done
+
+    # Make the change/fix
+   # if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
+    # Update the DISPLAYS map
+    _Reinitialize
+
+    # save another map of the current refresh rates as the 'new' ones
+    # Use the display name for that rate as the key
+    key=''
+    while IFS= read -r line; do
+        key="$(echo "$line" | awk '{ print$1 }')"
+        # ISSUE TO FIX: old_rates dont have the decimal but new rates do. also we only want decimal values on tany of the rates if the rate is NOT a whole number
+        new_rates["$key"]="$(echo "$line" | awk '{ print$5 }' )" #grep -oP "(\+|-)\d+(\+|-)\d\s+\d+")"
+    done <<< "$(_Dump_DISPLAYS)"
+
+    echo "dumping refresh rates after the change"
+    for key in "${!new_rates[@]}"; do
+    echo "Key: $key, Value: ${new_rates[$key]}"
+    done
+
 }
 
 # Generate payload map: DISPLAYS[][]
-_Init
+_Initialize
 
 # Require a command
 if [[ $# -eq 0 ]]; then 
