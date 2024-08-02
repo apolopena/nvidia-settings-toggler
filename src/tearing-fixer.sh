@@ -75,7 +75,7 @@ _Set_display_data() {
         if [[ $((cnt++ % 2)) -eq 0 ]]; then
             name="$(echo "$line" | grep ' connected ' | awk '{ print $1 }')"
             display_names+=("$name")
-            display_offsets+=("$(echo "$line" | grep -oP "(\+|-)[[:digit:]]+(\+|-)[[:digit:]]")")
+            display_offsets+=("$(echo "$line" | grep -oP "(\+|-)[[:digit:]]+(\+|-)[[:digit:]]+")")
 
             state="$(echo "$line" | grep -oP "[[:digit:]]+(mm x )[[:digit:]]+(mm)")"
             if [[ -n $state ]]; then
@@ -262,7 +262,7 @@ get() {
 fix () {
     declare -A old_rates 
     declare -A new_rates
-    local metamode name
+    local metamode name rates_differ='no'
 
     if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
 
@@ -306,17 +306,15 @@ fix () {
     # save a map of the current refresh rates as the 'old' ones
     # Use the display name for that rate as the key
     while IFS= read -r line; do
-        name="$(echo "$line" | awk '{ print$1 }')"
-        old_rates["$name"]="$(echo "$line" | awk '{ print$5 }')"
+        key="$(echo "$line" | awk '{ print$1 }')"
+        old_rates["$key"]="$(echo "$line" | awk '{ print$5 }')"
     done <<< "$(_Dump_DISPLAYS)"
 
-    echo "dumping refresh rates before the change"
-    for key in "${!old_rates[@]}"; do
-    echo "Key: $key, Value: ${old_rates[$key]}"
-    done
+
 
     # Make the change/fix
-   # if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
+    if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
+    sleep 2
     # Update the DISPLAYS map
     _Reinitialize
 
@@ -327,12 +325,39 @@ fix () {
         key="$(echo "$line" | awk '{ print$1 }')"
         # ISSUE TO FIX: old_rates dont have the decimal but new rates do. also we only want decimal values on tany of the rates if the rate is NOT a whole number
         new_rates["$key"]="$(echo "$line" | awk '{ print$5 }' )" #grep -oP "(\+|-)\d+(\+|-)\d\s+\d+")"
+        [[ ${new_rates["$key"]} != "${old_rates["$key"]}" ]] && rates_differ='yes'
     done <<< "$(_Dump_DISPLAYS)"
 
-    echo "dumping refresh rates after the change"
-    for key in "${!new_rates[@]}"; do
-    echo "Key: $key, Value: ${new_rates[$key]}"
+    declare -A test_rates
+    test_rates["HDMI-0"]="59.95"
+    test_rates["DP-3"]="164.96"
+    test_rates["DP-4"]="60"
+    rates_differ='yes'
+    [[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates old_rates test_rates
+
+    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates old_rates new_rates
+}
+
+# TODO: it all works however the command to set refresh rate requires the mode/resolution which is lame but
+# we will need it to run the command: xrandr --output $key --mode=whatever_intxwhatever_int --rate ${old[$key]}
+# rather than xrandr --output $key --rate ${old[$key]}   whcih simply doesnt work
+_Restore_Refresh_Rates() {
+    local -n old=$1
+    local -n new=$2
+    local cmd=
+
+    echo "_Restore_Refresh_Rates(): RESTORING REFRESH RATES"
+    
+    for key in "${!new[@]}"; do
+        #echo "${key}: comparing old rate: ${old[$key]} with new rate: ${new[$key]}" 
+        if [[ ${old[$key]} != "${new[$key]}" ]]; then
+            #echo "_Restore_Refresh_Rates() found a difference: old=${old[$key]}  ::  new=${new[$key]}"
+            #cmd="xrandr --output $key --rate ${old[$key]} && sleep 1"
+            #echo "to change it back is: $cmd"
+            xrandr --output "${key}" --rate "${old[$key]}" && sleep 1
+        fi
     done
+
 
 }
 
