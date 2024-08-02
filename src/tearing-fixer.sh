@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Allow optional parameters for functions without having to pass "$@"
+# shellcheck disable=SC2120
+
 # SUPER QUICK AND DIRTY FOR NOW, but here is the general gist of things...
 #
 # The idea here is to use this script to toggle on and off the proper settings for the proper monitors
@@ -67,34 +70,33 @@ _Set_display_data() {
 
     # Build the data point arrays that will be used to populate the DISPLAY map
     # NOTE: Every data point arary MUST contain the same number of elements or the DISPLAY map data will be skewed
-    local resolution state rate cnt=0
+    local resolution state rate name width cnt=0
     while IFS= read -r line; do
         if [[ $((cnt++ % 2)) -eq 0 ]]; then
-
-            display_names+=("$(echo "$line" | grep ' connected ' | awk '{ print $1 }')")
+            name="$(echo "$line" | grep ' connected ' | awk '{ print $1 }')"
+            display_names+=("$name")
             display_offsets+=("$(echo "$line" | grep -oP "(\+|-)[[:digit:]]+(\+|-)[[:digit:]]")")
 
             state="$(echo "$line" | grep -oP "[[:digit:]]+(mm x )[[:digit:]]+(mm)")"
             if [[ -n $state ]]; then
                 display_states+=("enabled") 
             else 
-                display_states+=("disabled")
+                display_states+=("disabled") 
             fi
 
         else
             resolution="$(echo "$line" | awk '{ print $1 }')"
-            resolutions+=("$resolution")
-
-            display_widths+=("$(echo "$resolution"| cut -d 'x' -f 1)")
-
-            rate="$(echo "$line" | awk '{ print$2 }' | cut -d '*' -f 1)"
+            width="$(echo "$resolution"| cut -d 'x' -f 1)"
+            rate="$(echo "$line" | grep -oP '\s*\K[^[:space:]]*[*][^[:space:]]*\s*' | cut -d '*' -f 1)"
 
             if [[ -n "$rate" ]]; then
-                # Strip refresh rates that end with .00 
                 [[ "$(echo "$rate" | cut -d '.' -f 2)" == '00' ]] && rate="$(echo "$rate" | cut -d '.' -f 1)"
             else
                 rate="N/A"
             fi
+
+            resolutions+=("$resolution")
+            display_widths+=("$width")
             refresh_rates+=("$rate")
 
         fi
@@ -106,28 +108,35 @@ _Set_display_data() {
 
         for ((j=0;j<"$num_columns";j++)) do
 
-            # Uncomment below lines to debug assigment of the multidimensional array DISPLAYS
-            #local cache=$RANDOM
-            #echo "row ${display_names[$j]}, column $i, data: $cache"
-            # Set each data point in the proper location of the payload
             if [[ $j -eq 0 ]]; then
                 DISPLAYS[$i,$j]="${display_names[$i]}"
+                [[ $1 == 'debug' ]] && echo "set name for ${display_names[$i]} to: ${DISPLAYS[$i,$j]}"
             elif [[ $j -eq 1 ]]; then
                 DISPLAYS[$i,$j]="${resolutions[$i]}"
+                [[ $1 == 'debug' ]] && echo "set resolution for ${display_names[$i]} to: ${DISPLAYS[$i,$j]}"
             elif [[ $j -eq 2 ]]; then
                 DISPLAYS[$i,$j]="${display_widths[$i]}"
+                [[ $1 == 'debug' ]] && echo "set width for ${display_names[$i]} to: ${DISPLAYS[$i,$j]}"
             elif [[ $j -eq 3 ]]; then
                 DISPLAYS[$i,$j]="${display_offsets[$i]}"
+                [[ $1 == 'debug' ]] && echo "set offset for ${display_names[$i]} to: ${DISPLAYS[$i,$j]}"
             elif [[ $j -eq 4 ]]; then
                 DISPLAYS[$i,$j]="${refresh_rates[$i]}"
+                [[ $1 == 'debug' ]] && echo "set refresh rate for ${display_names[$i]} to: ${DISPLAYS[$i,$j]}"
             elif [[ $j -eq 5 ]]; then
                 DISPLAYS[$i,$j]="${display_states[$i]}"
+                [[ $1 == 'debug' ]] && echo "set display state for ${display_names[$i]} to: ${DISPLAYS[$i,$j]}"
             elif [[ $j -eq 6 ]]; then
-                [[ "${display_names[$i]}" == "$primary_display" ]] && DISPLAYS[$i,$j]="primary" || DISPLAYS[$i,$j]='not primary'
+                if [[ "${display_names[$i]}" == "$primary_display" ]]; then 
+                    DISPLAYS[$i,$j]="primary"
+                else
+                    DISPLAYS[$i,$j]='not primary'
+                fi
+                [[ $1 == 'debug' ]] && echo "set primary diplay status for ${display_names[$i]} as ${DISPLAYS[$i,$j]}"
             fi
 
         done
-
+        [[ $1 == 'debug' ]] && echo
     done    
 
 }
@@ -136,17 +145,19 @@ _Set_display_data() {
 _Dump_DISPLAYS() {
     local num_rows=$DISPLAY_TOTAL
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
-    local linebreak_max=num_columns
-
+    local foo="${num_columns}"
+    local linebreak_max="$num_columns"
     local count
+
     for (( i=0; i < num_rows; i++ )) do
         for (( j=0; j < num_columns; j++ )) do
             count=$((i * j))
-            [[ $count -lt $linebreak_max ]] && [[ -n ${DISPLAYS[$i,$j]} ]] && echo -n "     ${DISPLAYS[$i,$j]}     "
+            [[ -n ${DISPLAYS[$i,$j]} ]] && echo -n "     ${DISPLAYS[$i,$j]}     "
         done
         # Add linebreaks to increase readability
         [[ $count -lt $linebreak_max ]] && echo
    done
+   echo
 }
 
 _Monitor_names() {
