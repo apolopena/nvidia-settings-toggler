@@ -281,7 +281,75 @@ get() {
     echo "${payload}"
 }
 
-fix () {
+# For checking the state of CurrentMetaMode
+# Returns a multiline string with each line being the CurrentMetaMode for each connected and enabled display
+# Swaps the nvidia given alias of each display with its X11 given name
+_Query_CurrentMetaMode() {
+    local raw_data payload cnt name display_total
+
+    # Parse raw data into chunks
+    raw_data="$(nvidia-settings --query CurrentMetaMode --terse)"
+    IFS="::" read -r -a chunks <<< "$raw_data"
+
+    # Pop 2 chunks because we dont need [0] and [1] 
+    chunks=("${chunks[@]:2}")
+
+    display_total="$(( ${#chunks[@]} - 1 ))"
+
+    # The chunked data is not how we want it so we need to restructure it quite a bit
+    cnt=0
+    for i in "${chunks[@]}"; do
+        # Parse out the whitespace we dont want
+        chunks["$cnt"]="$(echo "$i" | xargs)"
+        
+        # The data for the first display comes out a bit different than the rest...
+        # Append the first element of the array to the 2nd element of the array
+        # while swapping the nvidia alias with the X11 name
+        # and then reforming the missing delimiter } in the 2nd element of the array
+        # reform the payload string and then finally save the last field as the next name
+        if [[ $cnt -eq 0 ]]; then 
+            payload="$(_Get_Name_From_Alias "${chunks[$cnt]}")"
+            [[ -z $payload ]] && echo "internal error: failed to get X11 name for nvidia alias '${chunks[0]}'" 
+        fi
+        if [[ $cnt -eq 1 ]]; then
+            payload+=": $(echo "${chunks[$cnt]}" | cut -d '}' -f 1)}" &&
+            name="$(echo "${chunks[$cnt]}" | cut -d '}' -f 2 | awk '{print $NF}' )"
+            # TODO: error handle a possible empty return here
+            name="$(_Get_Name_From_Alias "$name")"
+        fi
+
+        # If there are more displays to process then parse the payload a little differently than the first display
+        if (( display_total > 1 )); then
+            if [[ $cnt -gt 1  ]]; then
+                payload+="\n${name}: $(echo "${chunks[$cnt]}" | cut -d '}' -f 1)}"
+                name="$(echo "${chunks[$cnt]}" | cut -d '}' -f 2 | awk '{print $NF}')"
+                name="$(_Get_Name_From_Alias "$name")"
+            fi
+        fi
+
+        (( cnt++ ))
+    done 
+
+    echo -e "${payload}"
+}
+
+# TODO support subcommand(s) that are the display name itself in case you want you use the fix for just a single monitor
+# Ideally this function would accept multiple sub commands for each display in the case where a user would like use the fix for a number 
+# of connected enabled displays but not all of them, this could get messy though
+# if no subcommand is given all displays will be affected
+fix-on () {
+    _Fix on
+}
+
+# TODO support subcommand(s) that are the display name itself in case you want you to turn off the fix for just a single monitor
+# Ideally this function would accept multiple sub commands for each display in the case where a user would like turn off fix for a number 
+# of connected enabled displays but not all of them, this could get messy though
+# if no subcommand is given all displays will be affected
+fix-off() {
+   _Fix off
+}
+
+_Fix() {
     declare -A previous_rates 
     declare -A current_rates
     declare -A active_modes
