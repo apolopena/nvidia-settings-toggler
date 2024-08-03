@@ -28,6 +28,12 @@
 
 # TODO add in AllowGSYNCCompatible=On for DP-4 (controlled by a an option?) and only set AllowGSYNCCompatible=On for that display if it set to Off or not set
 
+# TODO only toggle composition pipeline settings on or off if they are not already in that state, allthough it doesnt seem to matter but it must right? it must.
+# If we want to check the state of the CurrentMeta mode nvidia uses Aliases to the display names, I cant find a mapping of this anywhere
+# Hence to check the state of the composition pipeline for a particular display we will need to generate our own alias maps based off of a combination
+# of the resolution and offset. To clarify we will need to get the CurrentMetaMode with the command: nvidia-settings --query CurrentMetaMode --terse
+# The map can be generated using this command: nvidia-settings --query dpys | grep 'connected, enabled'
+
 # Globals
 declare -A DISPLAYS
 DISPLAY_TOTAL=
@@ -145,8 +151,6 @@ _Set_display_data() {
 _Dump_DISPLAYS() {
     local num_rows=$DISPLAY_TOTAL
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
-    local foo="${num_columns}"
-    local linebreak_max="$num_columns"
     local count
 
     for (( i=0; i < num_rows; i++ )) do
@@ -154,15 +158,33 @@ _Dump_DISPLAYS() {
             count=$((i * j))
             [[ -n ${DISPLAYS[$i,$j]} ]] && echo -n "     ${DISPLAYS[$i,$j]}     "
         done
-        # Add linebreaks to increase readability
-        [[ $count -lt $linebreak_max ]] && echo
+        # For human readability
+        [[ $count -lt $num_columns ]] && echo
    done
    echo
 }
 
-_Monitor_names() {
-    xrandr | grep " connected " | awk '{ print$1 }'
+# The nvidia driver will map aliases to the true display names issued by xorg
+# This returns that mapping in a terse manner
+_Get_Name_From_Alias() {
+    local alias name raw_data match
+    raw_data="$(nvidia-settings --query dpys | grep 'connected, enabled')"
+
+    while IFS= read -r line; do
+        # Strip out the brackets and bump to uppercase
+        alias="$(echo "$line" | awk '{ print $2 }' | grep -oP '(?<=\[)[^\[\]]+(?=\])' | tr '[:lower:]' '[:upper:]')"
+        # Swap the colon for a dash
+        alias=${alias//:/-}
+
+        # Strip out the parenthesis
+        name="$(echo "$line" | awk '{ print $3 }' | grep -oP '(?<=\()[^\(\)]+(?=\))')"
+
+        [[ $1 == "$alias" ]] && match="$name"
+    done <<< "$raw_data"
+
+    echo "$match"
 }
+
 
 _All_whitespace() {
     local arg="$1"
@@ -173,8 +195,9 @@ _All_whitespace() {
 }
 
 Test() {
-    echo "Test(): Contents of the DISPLAY map is"
-    _Dump_DISPLAYS
+    #echo "Test(): Contents of the DISPLAY map is"
+    #_Dump_DISPLAYS
+    echo "X11 Display Name for Nvidia Alias '$1' is '$(_Get_Name_From_Alias "$1")'"
  }
 
 _Meets_reqs() {
@@ -234,7 +257,6 @@ get() {
     local name=0     # Index of the display name value set in the DISPLAYS map @see _Set_display_data()
     local offset=3   # Index of the display offset value set in the DISPLAYS map @see _Set_display_data()
     local resolution=1   # Index of the display offset value set in the DISPLAYS map @see _Set_display_data()
-    local nas='nvidia-auto-select'
     local num_rows="$DISPLAY_TOTAL"
     local num_columns=$(( ${#DISPLAYS[@]} / DISPLAY_TOTAL ))
 
@@ -260,8 +282,9 @@ get() {
 }
 
 fix () {
-    declare -A old_rates 
-    declare -A new_rates
+    declare -A previous_rates 
+    declare -A current_rates
+    declare -A active_modes
     local metamode name rates_differ='no'
 
     if ! _Valid_OnOff_Subcommand "$1"; then exit 1; fi
@@ -273,92 +296,67 @@ fix () {
         exit 1
     fi
 
-    # TODO:
-    # We need a fix here for when nvidia-auto-select uses a refresh rate other than what was just used
-    # For example if DP-4 was set to 240hz and the below metamode is used:
-    # DP-3:nvidia-auto-select+2560+0{ForceFullCompositionPipeline=On},DP-4:nvidia-auto-select+0+0{ForceFullCompositionPipeline=On}
-    # Then the refresh rate of DP-4 will be changed to 60hz
-    # This is because "nvidia-auto-select" mode is not necessarily the largest possible resolution, 
-    # nor is it necessarily the mode with the highest refresh rate. 
-    # Rather, the "nvidia-auto-select" mode is selected such that it is a reasonable default.
-    # See https://download.nvidia.com/XFree86/Linux-x86_64/169.04/README/chapter-19.html
-
-    # Possible fix could be to track the refresh rates before the change is made,
-    # then compare the new refresh rate with the old ones and if they differ set them back to the old refrest rates
-    # it is possible that the resolution could be chaged, tminings could be different and general crap could ensue
-    # I would like to simply set everything explicitly rather than use nvidia-auto-select
-    # but I could not find a command that works properly. The closest I could find was this:
-    # nvidia-settings --assign CurrentMetaMode="DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On }, DP-4: 2560x1600_240 +0+0 { ForceFullCompositionPipeline = On }"
-    # which sets the resolution ans refresh rates explicitly but notice that DP-3 does not have an explicit refresh rate set
-    # Any attempt to set a refresh rate such as using 2560x1440_164.96 0r 2560x1440_164.96 failed.
-    # I mean nvidia-settings --assign CurrentMetaMode="DP-3: 2560x1440 +2560+0 { ForceFullCompositionPipeline = On }, DP-4: 2560x1600_240 +0+0 { ForceFullCompositionPipeline = On }"
-    # works for my displays but it may not work for other people displays, the result though should be simply that the refresh rate is changed to something other than what it was
-    # note that setting DP-3 refresh rate to a whole number that is a supported mode such as 120 did work:
-    # DP-3:2560x1440_120+2560+0{ForceFullCompositionPipeline=On},DP-4:2560x1600_240+0+0{ForceFullCompositionPipeline=On}
-    # adding other modes that were not there by default such as 165hz (for a 166hx monitor) did not work
-    # Hence the issue seems to be related to setting a refresh rate that is not a whole number, maybe its a 'timings' thing which I dont understand yet
-    # it might be the usb-c to dvi cable/adapter I am using for DP-3 that gives it a refresh rate that is not a whole number
-    # I tried adding a new mode for 166hz exactly but got an xrandr Error of failed request:  BadMatch (invalid parameter attributes)
-
-    # I am going to try to store the original refresh rates, issue the command: nvidia-settings --assign CurrentMetaMode="${metamode}"
-    # collect the new refres hrates, compare them and if any new value is different from the old value then change it back to the old value
-
-    # save a map of the current refresh rates as the 'old' ones
-    # Use the display name for that rate as the key
+    # Save a map of the current refresh rates of enabled displays as the 'previous' ones using the name of the display as the key
     while IFS= read -r line; do
-        key="$(echo "$line" | awk '{ print$1 }')"
-        old_rates["$key"]="$(echo "$line" | awk '{ print$5 }')"
+        if [[ $(echo "$line" | awk '{print$6}' ) == 'enabled' ]]; then
+            key="$(echo "$line" | awk '{ print$1 }')"
+            previous_rates["$key"]="$(echo "$line" | awk '{ print$5 }')"
+        fi
     done <<< "$(_Dump_DISPLAYS)"
 
+    # Save a map of the active mode (resolution) of enabled displays using the name of the display as the key
+    while IFS= read -r line; do
+        if [[ $(echo "$line" | awk '{print$6}' ) == 'enabled' ]]; then
+            key="$(echo "$line" | awk '{ print$1 }')"
+            # shellcheck disable=SC2034
+            active_modes["$key"]="$(echo "$line" | awk '{ print$2 }')"
+        fi
+    done <<< "$(_Dump_DISPLAYS)"
 
-
-    # Make the change/fix
+    # Make the change/fix, comment out for a dry run test
     if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
-    sleep 2
+    
     # Update the DISPLAYS map
     _Reinitialize
 
-    # save another map of the current refresh rates as the 'new' ones
-    # Use the display name for that rate as the key
-    key=''
+    # Save a map of the current refresh rates of enabled displays as the 'current' ones using the name of the display as the key
+    local key=''
     while IFS= read -r line; do
-        key="$(echo "$line" | awk '{ print$1 }')"
-        # ISSUE TO FIX: old_rates dont have the decimal but new rates do. also we only want decimal values on tany of the rates if the rate is NOT a whole number
-        new_rates["$key"]="$(echo "$line" | awk '{ print$5 }' )" #grep -oP "(\+|-)\d+(\+|-)\d\s+\d+")"
-        [[ ${new_rates["$key"]} != "${old_rates["$key"]}" ]] && rates_differ='yes'
+        if [[ $(echo "$line" | awk '{print$6}' ) == 'enabled' ]]; then
+            key="$(echo "$line" | awk '{ print$1 }')"
+            current_rates["$key"]="$(echo "$line" | awk '{ print$5 }' )" 
+            [[ ${current_rates["$key"]} != "${previous_rates["$key"]}" ]] && rates_differ='yes'
+        fi
     done <<< "$(_Dump_DISPLAYS)"
 
-    declare -A test_rates
-    test_rates["HDMI-0"]="59.95"
-    test_rates["DP-3"]="164.96"
-    test_rates["DP-4"]="60"
-    rates_differ='yes'
-    [[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates old_rates test_rates
+    # Uncomment for a dry run to test restoring refresh rates without actaully making any changes
+    # Note: Data should match your currently enabled displays
+    #declare -A test_rates
+    #test_rates["HDMI-0"]="59.95"
+    #test_rates["DP-3"]="164.96"
+    # shellcheck disable=SC2034 # Dont uncomment this
+    #test_rates["DP-4"]="60"
+    #rates_differ='yes'
+    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates test_rates active_modes
 
-    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates old_rates new_rates
+    # comment this out when doing a dry run test
+    [[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates current_rates active_modes
 }
 
-# TODO: it all works however the command to set refresh rate requires the mode/resolution which is lame but
-# we will need it to run the command: xrandr --output $key --mode=whatever_intxwhatever_int --rate ${old[$key]}
-# rather than xrandr --output $key --rate ${old[$key]}   whcih simply doesnt work
 _Restore_Refresh_Rates() {
-    local -n old=$1
-    local -n new=$2
-    local cmd=
+    local -n previous=$1
+    local -n current=$2
+    # shellcheck disable=SC2178
+    local -n resolutions=$3 # Why does this trigger SC2178 but new and previous do not???
 
-    echo "_Restore_Refresh_Rates(): RESTORING REFRESH RATES"
-    
-    for key in "${!new[@]}"; do
-        #echo "${key}: comparing old rate: ${old[$key]} with new rate: ${new[$key]}" 
-        if [[ ${old[$key]} != "${new[$key]}" ]]; then
-            #echo "_Restore_Refresh_Rates() found a difference: old=${old[$key]}  ::  new=${new[$key]}"
-            #cmd="xrandr --output $key --rate ${old[$key]} && sleep 1"
-            #echo "to change it back is: $cmd"
-            xrandr --output "${key}" --rate "${old[$key]}" && sleep 1
+    for key in "${!current[@]}"; do
+        if [[ ${previous[$key]} != "${current[$key]}" ]]; then
+            #echo "_Restore_Refresh_Rates() found a difference: previous=${previous[$key]}  ::  current=${current[$key]}"
+            #local cmd="xrandr --output $key --mode ${resolutions[$key]} --rate ${previous[$key]}"
+            #echo "restoring previous refresh rate using the command: $cmd"
+            xrandr --output "${key}" --mode "${resolutions[$key]}" --rate "${previous[$key]}" # comment this out for a dry run test
         fi
     done
-
-
 }
 
 # Generate payload map: DISPLAYS[][]
