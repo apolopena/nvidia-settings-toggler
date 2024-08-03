@@ -381,8 +381,62 @@ _Fix() {
         fi
     done <<< "$(_Dump_DISPLAYS)"
 
+    # Dont turn the fix on if it is already on for a particular display and vice versa
+    # Compare the proposed new CurrentMetaMode with the current CurrentMetaMode
+    #echo -e "Proposed new CurrentMetaMode is:\n${metamode}"
+    local current_CurrentMetaMode
+    current_CurrentMetaMode="$(_Query_CurrentMetaMode)"
+    #echo  -e "Current CurrentMetaMode is:\n$current_CurrentMetaMode"
+
+    local tmp_metamode proposed_name proposed_data current_name current_data
+    tmp_metamode="$(echo "$metamode" | tr '},' '}\n')"
+    while IFS= read -r outer_line; do
+        proposed_name="$(echo "$outer_line" | cut -d ':' -f 1)"
+        proposed_data="$(echo "$outer_line" | cut -d ':' -f 2)"
+        while IFS= read -r inner_line; do
+            current_name="$(echo "$inner_line" | cut -d ':' -f 1)"
+            current_data="$(echo "$inner_line" | cut -d ':' -f 2)"
+            # Find the proposed data and compare it to the current data
+            # Squak if the user is trying to turn the fix on if it is already on for a particular display or vice versa
+            if [[ "$proposed_name" -eq "$current_name" ]]; then
+                #echo "FOUND A MATCH FOR $current_name"
+                #echo "proposed data: $proposed_data"
+                #echo "current data: $current_data"
+
+                # Squak if trying to turn off the pipeline for display that already has it turned off
+                # TODO if there are multiple culprite, trim the leading comma on the parsed $metamode
+                if echo "$proposed_data" | grep -q 'ForceFullCompositionPipeline=Off'; then
+                    if ! echo "$current_data" | grep -q 'ForceFullCompositionPipeline=On'; then
+                        # Strip out the spaces of the proposed CurrentMetaMode to matche the current CurrentMetaMode
+                        # so we can parse it out
+                        inner_line="${inner_line// }"
+
+                        echo "$(basename "${BASH_SOURCE[1]}") WARNING: display $current_name already has ForceFullCompositionPipeline turned off"
+                        echo -e "\tThis portion of the proposed CurrentMetaMode:\n\t${outer_line}"
+                        echo -e "\twill be removed from the proposed CurrentMetaMode:\n\t${metamode}" 
+
+                        metamode="$(echo "$metamode" | sed "s|$outer_line||g" | tr -s ',')"
+
+                        echo -e "The new proposed CurrentMetaMode is:\n\t${metamode}"
+                    fi
+                fi
+
+                # And vice versa
+
+
+
+
+                # Squak if trying to turn on the pipeline for display that already has it turned on
+                # TODO parse the proposed data to omit this display and wartn the user in the output
+
+            fi
+        done <<< "$current_CurrentMetaMode"
+    done <<< "$tmp_metamode"
+
+
+
     # Make the change/fix, comment out for a dry run test
-    if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
+    #if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
     
     # Update the DISPLAYS map
     _Reinitialize
@@ -402,13 +456,13 @@ _Fix() {
     #declare -A test_rates
     #test_rates["HDMI-0"]="59.95"
     #test_rates["DP-3"]="164.96"
-    # shellcheck disable=SC2034 # Dont uncomment this
+    ## shellcheck disable=SC2034 # Dont uncomment this
     #test_rates["DP-4"]="60"
     #rates_differ='yes'
     #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates test_rates active_modes
 
     # comment this out when doing a dry run test
-    [[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates current_rates active_modes
+    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates current_rates active_modes
 }
 
 _Restore_Refresh_Rates() {
