@@ -423,7 +423,11 @@ _Sanitize_CurrentMetaMode() {
     #echo  -e "Current CurrentMetaMode is:\n$current_CurrentMetaMode"
 
     local proposed_metamode proposed_name proposed_data current_name current_data
+    local  option option_name='ForceFullCompositionPipeline'
+
+    option="${option_name}=${1^}"
     proposed_metamode="$(echo "$metamode" | tr '},' '}\n')"
+
     while IFS= read -r outer_line; do
         proposed_name="$(echo "$outer_line" | cut -d ':' -f 1)"
         proposed_data="$(echo "$outer_line" | cut -d ':' -f 2)"
@@ -438,8 +442,13 @@ _Sanitize_CurrentMetaMode() {
                 #echo "current data: $current_data"
 
                 # Squak if trying to turn off the pipeline for display that already has it turned off
-                # TODO if there are multiple culprite, trim the leading comma on the parsed $metamode
-                if echo "$proposed_data" | grep -q 'ForceFullCompositionPipeline=Off'; then
+                # If the option exists in the proposed CurrentMetaMode...
+                if echo "$proposed_data" | grep -q "$option"; then # $1=off then option=ForceFullCompositionPipeline=Off, $1=on then option=ForceFullCompositionPipeline=On
+
+                    # The challenge is here...
+                    # If there is no option at all in the current CurrentMetaMode then Off options AND On options should NOT be parsed out
+                    # I am not sure how to express this in code yet...
+                    # Also conversely if there is an On option present in the current CurrentMetaMode then On options SHOULD be parsed out
                     if ! echo "$current_data" | grep -q 'ForceFullCompositionPipeline=On'; then
                         # Strip out the spaces of the proposed CurrentMetaMode to matche the current CurrentMetaMode
                         # so we can parse it out
