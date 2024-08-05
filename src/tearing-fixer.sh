@@ -381,6 +381,40 @@ _Fix() {
         fi
     done <<< "$(_Dump_DISPLAYS)"
 
+    # Parse proposed CurrentMode to omit redundant options
+    metamode="$(_Sanitize_CurrentMetaMode)"
+
+    # Make the change/fix, comment out for a dry run test
+    #if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
+    
+    # Update the DISPLAYS map
+    _Reinitialize
+
+    # Save a map of the current refresh rates of enabled displays as the 'current' ones using the name of the display as the key
+    local key=''
+    while IFS= read -r line; do
+        if [[ $(echo "$line" | awk '{print$6}' ) == 'enabled' ]]; then
+            key="$(echo "$line" | awk '{ print$1 }')"
+            current_rates["$key"]="$(echo "$line" | awk '{ print$5 }' )" 
+            [[ ${current_rates["$key"]} != "${previous_rates["$key"]}" ]] && rates_differ='yes'
+        fi
+    done <<< "$(_Dump_DISPLAYS)"
+
+    # Uncomment for a dry run to test restoring refresh rates without actaully making any changes
+    # Note: Data should match your currently enabled displays
+    #declare -A test_rates
+    #test_rates["HDMI-0"]="59.95"
+    #test_rates["DP-3"]="164.96"
+    ## shellcheck disable=SC2034 # Dont uncomment this
+    #test_rates["DP-4"]="60"
+    #rates_differ='yes'
+    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates test_rates active_modes
+
+    # comment this out when doing a dry run test
+    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates current_rates active_modes
+}
+
+_Sanitize_CurrentMetaMode() {
     # Dont turn the fix on if it is already on for a particular display and vice versa
     # Compare the proposed new CurrentMetaMode with the current CurrentMetaMode
     #echo -e "Proposed new CurrentMetaMode is:\n${metamode}"
@@ -388,8 +422,8 @@ _Fix() {
     current_CurrentMetaMode="$(_Query_CurrentMetaMode)"
     #echo  -e "Current CurrentMetaMode is:\n$current_CurrentMetaMode"
 
-    local tmp_metamode proposed_name proposed_data current_name current_data
-    tmp_metamode="$(echo "$metamode" | tr '},' '}\n')"
+    local proposed_metamode proposed_name proposed_data current_name current_data
+    proposed_metamode="$(echo "$metamode" | tr '},' '}\n')"
     while IFS= read -r outer_line; do
         proposed_name="$(echo "$outer_line" | cut -d ':' -f 1)"
         proposed_data="$(echo "$outer_line" | cut -d ':' -f 2)"
@@ -431,38 +465,9 @@ _Fix() {
 
             fi
         done <<< "$current_CurrentMetaMode"
-    done <<< "$tmp_metamode"
+    done <<< "$proposed_metamode"
 
-
-
-    # Make the change/fix, comment out for a dry run test
-    #if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
-    
-    # Update the DISPLAYS map
-    _Reinitialize
-
-    # Save a map of the current refresh rates of enabled displays as the 'current' ones using the name of the display as the key
-    local key=''
-    while IFS= read -r line; do
-        if [[ $(echo "$line" | awk '{print$6}' ) == 'enabled' ]]; then
-            key="$(echo "$line" | awk '{ print$1 }')"
-            current_rates["$key"]="$(echo "$line" | awk '{ print$5 }' )" 
-            [[ ${current_rates["$key"]} != "${previous_rates["$key"]}" ]] && rates_differ='yes'
-        fi
-    done <<< "$(_Dump_DISPLAYS)"
-
-    # Uncomment for a dry run to test restoring refresh rates without actaully making any changes
-    # Note: Data should match your currently enabled displays
-    #declare -A test_rates
-    #test_rates["HDMI-0"]="59.95"
-    #test_rates["DP-3"]="164.96"
-    ## shellcheck disable=SC2034 # Dont uncomment this
-    #test_rates["DP-4"]="60"
-    #rates_differ='yes'
-    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates test_rates active_modes
-
-    # comment this out when doing a dry run test
-    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates current_rates active_modes
+    echo "$metamode"
 }
 
 _Restore_Refresh_Rates() {
