@@ -37,6 +37,7 @@
 # Globals
 declare -A DISPLAYS
 DISPLAY_TOTAL=
+V=true # give this a value for verbose output
 e_prefix="tearing_fix.sh error:"
 
 
@@ -381,12 +382,17 @@ _Fix() {
         fi
     done <<< "$(_Dump_DISPLAYS)"
 
-    # Parse proposed CurrentMode to omit redundant options
-    metamode="$(_Sanitize_CurrentMetaMode)"
+    metamode="$(_Sanitize_CurrentMetaMode "ForceFullCompositionPipeline=$1" "$metamode")"
 
-    # Make the change/fix, comment out for a dry run test
-    #if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi
-    
+    # Run the actual command if needed
+    if [[ -n "$metamode" ]]; then
+        echo "TEST RUN: $metamode"
+       #if ! nvidia-settings --assign CurrentMetaMode="${metamode}"; then exit 1; fi 
+    else
+        echo "${option} was already set, no action was needed, no action was taken."
+        exit 0
+    fi
+       
     # Update the DISPLAYS map
     _Reinitialize
 
@@ -400,85 +406,91 @@ _Fix() {
         fi
     done <<< "$(_Dump_DISPLAYS)"
 
-    # Uncomment for a dry run to test restoring refresh rates without actaully making any changes
-    # Note: Data should match your currently enabled displays
-    #declare -A test_rates
-    #test_rates["HDMI-0"]="59.95"
-    #test_rates["DP-3"]="164.96"
-    ## shellcheck disable=SC2034 # Dont uncomment this
-    #test_rates["DP-4"]="60"
-    #rates_differ='yes'
-    #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates test_rates active_modes
-
     # comment this out when doing a dry run test
     #[[ $rates_differ == 'yes' ]] && _Restore_Refresh_Rates previous_rates current_rates active_modes
 }
 
+# Parses out redundant options if needed
+# Requires:
+#   Option (name value pair): 
+#       $1 ForceFullCompositionPipeline=<on|off>
+#   CurrentMetaMode to be sanitized:
+#       $2 <CurrentMetaMode> to be sanitized
+# creates a log for debugging, to debug it run something like:
+# tail -vf -n +1 tmp_log.log
 _Sanitize_CurrentMetaMode() {
-    # Dont turn the fix on if it is already on for a particular display and vice versa
-    # Compare the proposed new CurrentMetaMode with the current CurrentMetaMode
-    #echo -e "Proposed new CurrentMetaMode is:\n${metamode}"
-    local current_CurrentMetaMode
+    local payload log='tmp_log.log'
+    local current_CurrentMetaMode current_name current_data
+    local proposed_metamode proposed_name proposed_data 
+    local option option_name option_value
+
+    option_name="$(echo "$1" | cut -d '=' -f 1)"
+    option_value="$(echo "$1" | cut -d '=' -f 2)"
+    option="${option_name}=${option_value^}"
     current_CurrentMetaMode="$(_Query_CurrentMetaMode)"
-    #echo  -e "Current CurrentMetaMode is:\n$current_CurrentMetaMode"
+    proposed_metamode="$(echo "$2" | tr '},' '}\n')"
 
-    local proposed_metamode proposed_name proposed_data current_name current_data
-    local  option option_name='ForceFullCompositionPipeline'
+    [[ ! -e "$log" ]] && touch "$log"
+    echo -e "current_CurrentMetaMode=\n$current_CurrentMetaMode" >> $log
+    echo -e "proposed_metamode=\n$proposed_metamode" >> $log
 
-    option="${option_name}=${1^}"
-    proposed_metamode="$(echo "$metamode" | tr '},' '}\n')"
-
+    # SANITIZE: TODO PUT THIS IS A FUNCTION
     while IFS= read -r outer_line; do
         proposed_name="$(echo "$outer_line" | cut -d ':' -f 1)"
         proposed_data="$(echo "$outer_line" | cut -d ':' -f 2)"
         while IFS= read -r inner_line; do
             current_name="$(echo "$inner_line" | cut -d ':' -f 1)"
             current_data="$(echo "$inner_line" | cut -d ':' -f 2)"
-            # Find the proposed data and compare it to the current data
-            # Squak if the user is trying to turn the fix on if it is already on for a particular display or vice versa
             if [[ "$proposed_name" -eq "$current_name" ]]; then
                 #echo "FOUND A MATCH FOR $current_name"
                 #echo "proposed data: $proposed_data"
                 #echo "current data: $current_data"
-
-                # Squak if trying to turn off the pipeline for display that already has it turned off
                 # If the option exists in the proposed CurrentMetaMode...
-                if echo "$proposed_data" | grep -q "$option"; then # $1=off then option=ForceFullCompositionPipeline=Off, $1=on then option=ForceFullCompositionPipeline=On
-
-                    # The challenge is here...
-                    # If there is no option at all in the current CurrentMetaMode then Off options AND On options should NOT be parsed out
-                    # I am not sure how to express this in code yet...
-                    # Also conversely if there is an On option present in the current CurrentMetaMode then On options SHOULD be parsed out
-                    if ! echo "$current_data" | grep -q 'ForceFullCompositionPipeline=On'; then
-                        # Strip out the spaces of the proposed CurrentMetaMode to matche the current CurrentMetaMode
-                        # so we can parse it out
-                        inner_line="${inner_line// }"
-
-                        echo "$(basename "${BASH_SOURCE[1]}") WARNING: display $current_name already has ForceFullCompositionPipeline turned off"
-                        echo -e "\tThis portion of the proposed CurrentMetaMode:\n\t${outer_line}"
-                        echo -e "\twill be removed from the proposed CurrentMetaMode:\n\t${metamode}" 
-
-                        metamode="$(echo "$metamode" | sed "s|$outer_line||g" | tr -s ',')"
-
-                        echo -e "The new proposed CurrentMetaMode is:\n\t${metamode}"
+                if echo "$proposed_data" | grep -q "$option"; then 
+                    if ! echo "$current_data" | grep -q "$option_name"; then # If there is no option...
+                        # AND the proposed option value should be set to Off...
+                        # Parse out redundant commands
+                        if [[ $option_value == 'off' ]]; then
+                            { 
+                                echo "--------------------"
+                                echo "$(basename "${BASH_SOURCE[1]}") WARNING: display ${current_name} already has ${option_name} turned ${option_value}"
+                                echo -e "This portion of the proposed CurrentMetaMode:\n\t${outer_line}"
+                                echo -e "will be removed from the proposed CurrentMetaMode:${proposed_metamode}"
+                            } >> $log
+                            proposed_metamode="$(echo "$proposed_metamode" | sed "s|$outer_line||g" | tr -s ',\n')" # TODO: fix bug where an empty metamode has commas in it when more than two displays are involved
+                            # If the string ends up only containing commas then nuke it
+                            #[[ $proposed_metamode == *[!,]* ]] && proposed_metamode=''
+                            echo -e "\nThe new proposed CurrentMetaMode is:\t${proposed_metamode}" >> $log
+                        fi
+                    else # However if there is an option...
+                        #  And that option already has a value of On AND the proposed option also has a value of On.... 
+                        # Parse out redundant commands
+                        if [[ $(echo "$current_data" | grep -q "$option_name"; echo $?) -eq 0  && $1 == 'on' ]]; then
+                            echo "$(basename "${BASH_SOURCE[1]}") WARNING: display ${current_name} already has ${option_name} turned ${option_value}"
+                            echo -e "\tThis portion of the proposed CurrentMetaMode:\n\t${outer_line}"
+                            echo -e "\twill be removed from the proposed CurrentMetaMode:\n\t${metamode}" 
+                            metamode="$(echo "$metamode" | sed "s|$outer_line||g" | tr -s ',')"
+                            # If the string ends up only containing commas then nuke it
+                            [[ $metamode == *[!,]* ]] && metamode=''
+                            echo -e "The new proposed CurrentMetaMode is:\n\t${metamode}"
+                        fi
                     fi
                 fi
-
-                # And vice versa
-
-
-
-
-                # Squak if trying to turn on the pipeline for display that already has it turned on
-                # TODO parse the proposed data to omit this display and wartn the user in the output
-
             fi
         done <<< "$current_CurrentMetaMode"
     done <<< "$proposed_metamode"
-
-    echo "$metamode"
+    echo "$(date +"%H:%M:%S") :: FINAL PAYLOAD:" >> $log
+    echo "$(date +"%H:%M:%S") :: $proposed_metamode" >> $log
 }
 
+_Debug() {
+    local log=
+    [[ $DEBUG -ne 1 || $DEBUG != 'true' || $DEBUG != 'yes' || $DEBUG != 'Yes' || $DEBUG != 'YES' ]] && return 0
+
+}
+
+# Nvidia takes the liberty of changing refresh rates for displays that had CurrentMetaMode options changed
+# This restores them
 _Restore_Refresh_Rates() {
     local -n previous=$1
     local -n current=$2
